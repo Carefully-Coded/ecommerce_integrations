@@ -28,6 +28,7 @@ SHOPIFY_VARIANTS_ATTR_LIST = ["option1", "option2", "option3"]
 
 # custom fields
 
+ITEM_SYNC_CHECKBOX = "sync_with_shopify"
 CUSTOMER_ID_FIELD = "shopify_customer_id"
 ORDER_ID_FIELD = "shopify_order_id"
 ORDER_NUMBER_FIELD = "shopify_order_number"

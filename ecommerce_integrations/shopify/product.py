@@ -10,6 +10,7 @@ from ecommerce_integrations.ecommerce_integrations.doctype.ecommerce_item import
 from ecommerce_integrations.shopify.connection import temp_shopify_session
 from ecommerce_integrations.shopify.constants import (
 	ITEM_SELLING_RATE_FIELD,
+	ITEM_SYNC_CHECKBOX,
 	MODULE_NAME,
 	SETTING_DOCTYPE,
 	SHOPIFY_VARIANTS_ATTR_LIST,
@@ -343,6 +344,10 @@ def upload_erpnext_item(doc, method=None):
 	setting = frappe.get_doc(SETTING_DOCTYPE)
 
 	if not setting.is_enabled() or not setting.upload_erpnext_items:
+		return
+	
+	# Check if item is marked for Shopify sync
+	if not item.get(ITEM_SYNC_CHECKBOX):
 		return
 
 	if frappe.flags.in_import:

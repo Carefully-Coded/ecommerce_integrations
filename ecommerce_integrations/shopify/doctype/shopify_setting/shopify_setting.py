@@ -19,6 +19,7 @@ from ecommerce_integrations.shopify.constants import (
 	CUSTOMER_ID_FIELD,
 	FULLFILLMENT_ID_FIELD,
 	ITEM_SELLING_RATE_FIELD,
+	ITEM_SYNC_CHECKBOX,
 	ORDER_ID_FIELD,
 	ORDER_ITEM_DISCOUNT_FIELD,
 	ORDER_NUMBER_FIELD,
@@ -109,6 +110,13 @@ class ShopifySetting(SettingController):
 def setup_custom_fields():
 	custom_fields = {
 		"Item": [
+			dict(
+				fieldname=ITEM_SYNC_CHECKBOX,
+				label="Sync Item with Shopify",
+				fieldtype="Check",
+				insert_after="item_code",
+				print_hide=1,
+			),
 			dict(
 				fieldname=ITEM_SELLING_RATE_FIELD,
 				label="Shopify Selling Rate",
