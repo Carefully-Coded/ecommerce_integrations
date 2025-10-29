@@ -93,6 +93,31 @@ class ShopifySetting(SettingController):
 					{"shopify_location_id": location.id, "shopify_location_name": location.name},
 				)
 
+	@frappe.whitelist()
+	def sync_inventory_now(self):
+		"""Manually trigger inventory sync to Shopify, bypassing frequency check."""
+		from ecommerce_integrations.shopify.inventory import upload_inventory_data_to_shopify
+		from ecommerce_integrations.controllers.inventory import get_inventory_levels
+
+		if not self.is_enabled():
+			frappe.throw(_("Shopify integration is not enabled"))
+
+		if not self.update_erpnext_stock_levels_to_shopify:
+			frappe.throw(_("Inventory sync to Shopify is not enabled"))
+
+		warehous_map = self.get_erpnext_to_integration_wh_mapping()
+		if not warehous_map:
+			frappe.throw(_("Please configure warehouse mapping first"))
+
+		inventory_levels = get_inventory_levels(tuple(warehous_map.keys()), MODULE_NAME)
+
+		if not inventory_levels:
+			frappe.msgprint(_("No inventory changes to sync"))
+			return
+
+		upload_inventory_data_to_shopify(inventory_levels, warehous_map)
+		frappe.msgprint(_("Inventory sync completed. Check Ecommerce Integration Log for details."), alert=True)
+
 	def get_erpnext_warehouses(self) -> list[ERPNextWarehouse]:
 		return [wh_map.erpnext_warehouse for wh_map in self.shopify_warehouse_mapping]
 

@@ -25,6 +25,20 @@ frappe.ui.form.on("Shopify Setting", {
 		});
 	},
 
+	sync_inventory_now: function (frm) {
+		frappe.call({
+			doc: frm.doc,
+			method: "sync_inventory_now",
+			freeze: true,
+			freeze_message: __("Syncing inventory to Shopify..."),
+			callback: (r) => {
+				if (!r.exc) {
+					frm.reload_doc();
+				}
+			},
+		});
+	},
+
 	refresh: function (frm) {
 		frm.add_custom_button(__("Import Products"), function () {
 			frappe.set_route("shopify-import-products");

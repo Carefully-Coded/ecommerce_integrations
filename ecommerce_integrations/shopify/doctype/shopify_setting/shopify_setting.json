@@ -49,6 +49,7 @@
   "inventory_sync_section",
   "warehouse",
   "update_erpnext_stock_levels_to_shopify",
+  "sync_inventory_now",
   "inventory_sync_frequency",
   "fetch_shopify_locations",
   "shopify_warehouse_mapping",
@@ -274,6 +275,12 @@
    "fieldname": "update_erpnext_stock_levels_to_shopify",
    "fieldtype": "Check",
    "label": "Update ERPNext stock levels to Shopify"
+  },
+  {
+   "depends_on": "eval:doc.update_erpnext_stock_levels_to_shopify",
+   "fieldname": "sync_inventory_now",
+   "fieldtype": "Button",
+   "label": "Sync Inventory Now"
   },
   {
    "default": "0",
