@@ -125,5 +125,11 @@ def _validate_request(req, hmac_header):
 	sig = base64.b64encode(hmac.new(secret_key.encode("utf8"), req.data, hashlib.sha256).digest())
 
 	if sig != bytes(hmac_header.encode()):
-		create_shopify_log(status="Error", request_data=req.data)
+		# Decode bytes to string for logging
+		request_data = req.data.decode('utf-8') if isinstance(req.data, bytes) else req.data
+		create_shopify_log(
+			status="Error",
+			request_data=request_data,
+			message=f"HMAC validation failed. Expected: {sig.decode('utf-8')}, Received: {hmac_header}"
+		)
 		frappe.throw(_("Unverified Webhook Data"))
