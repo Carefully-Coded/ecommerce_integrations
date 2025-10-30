@@ -5,6 +5,7 @@ from frappe import _, msgprint
 from frappe.utils import cint, cstr
 from frappe.utils.nestedset import get_root_of
 from shopify.resources import Product, Variant
+import shopify
 
 from ecommerce_integrations.ecommerce_integrations.doctype.ecommerce_item import ecommerce_item
 from ecommerce_integrations.shopify.connection import temp_shopify_session
@@ -418,6 +419,9 @@ def upload_erpnext_item(doc, method=None):
 
 			product.save()  # push variant
 
+			# Sync lead time metafield after product is saved
+			sync_lead_time_metafield(product, template_item)
+
 			ecom_items = list(set([item, template_item]))
 			for d in ecom_items:
 				ecom_item = frappe.get_doc(
@@ -484,8 +488,12 @@ def upload_erpnext_item(doc, method=None):
 					product.variants.append(Variant(variant_attributes))
 
 			is_successful = product.save()
-			if is_successful and item.variant_of and not existing_variant_id:
-				map_erpnext_variant_to_shopify_variant(product, item, variant_attributes)
+			if is_successful:
+				# Sync lead time metafield after product update
+				sync_lead_time_metafield(product, template_item)
+
+				if item.variant_of and not existing_variant_id:
+					map_erpnext_variant_to_shopify_variant(product, item, variant_attributes)
 
 			write_upload_log(status=is_successful, product=product, item=item, action="Updated")
 
@@ -523,10 +531,14 @@ def map_erpnext_variant_to_shopify_variant(shopify_product: Product, erpnext_ite
 
 
 def map_erpnext_item_to_shopify(shopify_product: Product, erpnext_item):
-	"""Map erpnext fields to shopify, called both when updating and creating new products."""
+	"""Map erpnext fields to shopify, called both when updating and creating new products.
+
+	Note: Description (body_html) is NOT synced to preserve Shopify's product descriptions.
+	"""
 
 	shopify_product.title = erpnext_item.item_name
-	shopify_product.body_html = erpnext_item.description
+	# Description is intentionally NOT synced - preserving Shopify's description
+	# shopify_product.body_html = erpnext_item.description
 	shopify_product.product_type = erpnext_item.item_group
 
 	if erpnext_item.weight_uom in WEIGHT_TO_ERPNEXT_UOM_MAP.values():
@@ -539,6 +551,140 @@ def map_erpnext_item_to_shopify(shopify_product: Product, erpnext_item):
 		shopify_product.status = "draft"
 		shopify_product.published = False
 		msgprint(_("Status of linked Shopify product is changed to Draft."))
+
+
+def sync_lead_time_metafield(shopify_product: Product, erpnext_item):
+	"""Sync lead time from ERPNext item to Shopify product metafield using GraphQL.
+
+	Syncs the 'lead_time_days' field from ERPNext Item to a Shopify metafield
+	under the 'custom' namespace with key 'lead_time_days'.
+
+	Note: This must be called AFTER the product is saved to ensure product.id exists.
+	Uses GraphQL metafieldsSet mutation for efficient upsert operation.
+	"""
+	lead_time = erpnext_item.get("lead_time_days")
+
+	if lead_time is None:
+		return
+
+	# Product must be saved first to have an ID
+	if not shopify_product.id:
+		return
+
+	# Prepare GraphQL mutation for metafield upsert
+	# Using metafieldsSet mutation which handles both create and update
+	mutation = """
+	mutation SetProductMetafield($metafields: [MetafieldsSetInput!]!) {
+		metafieldsSet(metafields: $metafields) {
+			metafields {
+				id
+				namespace
+				key
+				value
+				type
+			}
+			userErrors {
+				field
+				message
+			}
+		}
+	}
+	"""
+
+	# Prepare variables
+	# Global ID format: gid://shopify/Product/{product_id}
+	owner_id = f"gid://shopify/Product/{shopify_product.id}"
+
+	variables = {
+		"metafields": [
+			{
+				"ownerId": owner_id,
+				"namespace": "custom",
+				"key": "lead_time_days",
+				"value": str(int(lead_time)),
+				"type": "number_integer"
+			}
+		]
+	}
+
+	# Request data for logging
+	request_data = {
+		"mutation": mutation,
+		"variables": variables,
+		"item_code": erpnext_item.item_code,
+		"item_name": erpnext_item.item_name,
+		"lead_time_days": lead_time,
+		"shopify_product_id": shopify_product.id,
+	}
+
+	try:
+		# Execute GraphQL mutation
+		result = shopify.GraphQL().execute(mutation, variables=variables)
+
+		# Parse response
+		import json
+		response = json.loads(result)
+
+		if "errors" in response:
+			# GraphQL-level errors
+			error_messages = [error.get("message", str(error)) for error in response["errors"]]
+			error_msg = f"GraphQL errors: {', '.join(error_messages)}"
+
+			create_shopify_log(
+				status="Error",
+				request_data=request_data,
+				response_data=response,
+				message=f"Failed to sync lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). {error_msg}",
+				method="sync_lead_time_metafield",
+			)
+
+		elif response.get("data", {}).get("metafieldsSet", {}).get("userErrors"):
+			# User errors from the mutation
+			user_errors = response["data"]["metafieldsSet"]["userErrors"]
+			error_messages = [f"{err.get('field', 'unknown')}: {err.get('message', str(err))}" for err in user_errors]
+			error_msg = f"User errors: {', '.join(error_messages)}"
+
+			create_shopify_log(
+				status="Error",
+				request_data=request_data,
+				response_data=response,
+				message=f"Failed to sync lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). {error_msg}",
+				method="sync_lead_time_metafield",
+			)
+
+		else:
+			# Success
+			metafields = response.get("data", {}).get("metafieldsSet", {}).get("metafields", [])
+			if metafields:
+				metafield_data = metafields[0]
+				create_shopify_log(
+					status="Success",
+					request_data=request_data,
+					response_data=response,
+					message=f"Successfully synced lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). "
+							f"Metafield: {metafield_data.get('namespace')}.{metafield_data.get('key')} = {metafield_data.get('value')} days",
+					method="sync_lead_time_metafield",
+				)
+			else:
+				# Unexpected: no errors but no metafields returned
+				create_shopify_log(
+					status="Error",
+					request_data=request_data,
+					response_data=response,
+					message=f"Unexpected response when syncing lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). "
+							f"No errors but no metafields returned.",
+					method="sync_lead_time_metafield",
+				)
+
+	except Exception as e:
+		error_msg = str(e)
+		create_shopify_log(
+			status="Error",
+			request_data=request_data,
+			response_data={"exception": error_msg},
+			message=f"Exception while syncing lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). Error: {error_msg}",
+			method="sync_lead_time_metafield",
+		)
 
 
 def get_shopify_weight_uom(erpnext_weight_uom: str) -> str:
