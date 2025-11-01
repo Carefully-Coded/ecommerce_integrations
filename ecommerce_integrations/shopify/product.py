@@ -422,6 +422,11 @@ def upload_erpnext_item(doc, method=None):
 			# Sync lead time metafield after product is saved
 			sync_lead_time_metafield(product, template_item)
 
+			# If this is a variant item, also sync metafield to the variant
+			if item.variant_of and product.variants:
+				variant_id = str(product.variants[0].id)
+				sync_variant_lead_time_metafield(variant_id, item)
+
 			ecom_items = list(set([item, template_item]))
 			for d in ecom_items:
 				ecom_item = frappe.get_doc(
@@ -492,8 +497,23 @@ def upload_erpnext_item(doc, method=None):
 				# Sync lead time metafield after product update
 				sync_lead_time_metafield(product, template_item)
 
-				if item.variant_of and not existing_variant_id:
-					map_erpnext_variant_to_shopify_variant(product, item, variant_attributes)
+				# If this is a variant item, also sync metafield to the variant
+				if item.variant_of:
+					# Get the variant ID for this item
+					variant_id = existing_variant_id if existing_variant_id else None
+
+					if not existing_variant_id:
+						# New variant was just added
+						map_erpnext_variant_to_shopify_variant(product, item, variant_attributes)
+						# Get the newly created variant ID
+						variant_id = frappe.db.get_value(
+							"Ecommerce Item",
+							{"erpnext_item_code": item.name, "integration": MODULE_NAME},
+							"variant_id",
+						)
+
+					if variant_id:
+						sync_variant_lead_time_metafield(variant_id, item)
 
 			write_upload_log(status=is_successful, product=product, item=item, action="Updated")
 
@@ -684,6 +704,139 @@ def sync_lead_time_metafield(shopify_product: Product, erpnext_item):
 			response_data={"exception": error_msg},
 			message=f"Exception while syncing lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). Error: {error_msg}",
 			method="sync_lead_time_metafield",
+		)
+
+
+def sync_variant_lead_time_metafield(variant_id: str, erpnext_item):
+	"""Sync lead time from ERPNext item to Shopify variant metafield using GraphQL.
+
+	Syncs the 'lead_time_days' field from ERPNext Item to a Shopify variant metafield
+	under the 'custom' namespace with key 'lead_time_days'.
+
+	Args:
+		variant_id: Shopify variant ID (numeric)
+		erpnext_item: ERPNext Item document
+	"""
+	lead_time = erpnext_item.get("lead_time_days")
+
+	if lead_time is None:
+		return
+
+	if not variant_id:
+		return
+
+	# Prepare GraphQL mutation for variant metafield upsert
+	mutation = """
+	mutation SetVariantMetafield($metafields: [MetafieldsSetInput!]!) {
+		metafieldsSet(metafields: $metafields) {
+			metafields {
+				id
+				namespace
+				key
+				value
+				type
+			}
+			userErrors {
+				field
+				message
+			}
+		}
+	}
+	"""
+
+	# Prepare variables
+	# Global ID format: gid://shopify/ProductVariant/{variant_id}
+	owner_id = f"gid://shopify/ProductVariant/{variant_id}"
+
+	variables = {
+		"metafields": [
+			{
+				"ownerId": owner_id,
+				"namespace": "custom",
+				"key": "lead_time_days",
+				"value": str(int(lead_time)),
+				"type": "number_integer"
+			}
+		]
+	}
+
+	# Request data for logging
+	request_data = {
+		"mutation": mutation,
+		"variables": variables,
+		"item_code": erpnext_item.item_code,
+		"item_name": erpnext_item.item_name,
+		"lead_time_days": lead_time,
+		"shopify_variant_id": variant_id,
+	}
+
+	try:
+		# Execute GraphQL mutation
+		result = shopify.GraphQL().execute(mutation, variables=variables)
+
+		# Parse response
+		import json
+		response = json.loads(result)
+
+		if "errors" in response:
+			# GraphQL-level errors
+			error_messages = [error.get("message", str(error)) for error in response["errors"]]
+			error_msg = f"GraphQL errors: {', '.join(error_messages)}"
+
+			create_shopify_log(
+				status="Error",
+				request_data=request_data,
+				response_data=response,
+				message=f"Failed to sync lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). {error_msg}",
+				method="sync_variant_lead_time_metafield",
+			)
+
+		elif response.get("data", {}).get("metafieldsSet", {}).get("userErrors"):
+			# User errors from the mutation
+			user_errors = response["data"]["metafieldsSet"]["userErrors"]
+			error_messages = [f"{err.get('field', 'unknown')}: {err.get('message', str(err))}" for err in user_errors]
+			error_msg = f"User errors: {', '.join(error_messages)}"
+
+			create_shopify_log(
+				status="Error",
+				request_data=request_data,
+				response_data=response,
+				message=f"Failed to sync lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). {error_msg}",
+				method="sync_variant_lead_time_metafield",
+			)
+
+		else:
+			# Success
+			metafields = response.get("data", {}).get("metafieldsSet", {}).get("metafields", [])
+			if metafields:
+				metafield_data = metafields[0]
+				create_shopify_log(
+					status="Success",
+					request_data=request_data,
+					response_data=response,
+					message=f"Successfully synced lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). "
+							f"Metafield: {metafield_data.get('namespace')}.{metafield_data.get('key')} = {metafield_data.get('value')} days",
+					method="sync_variant_lead_time_metafield",
+				)
+			else:
+				# Unexpected: no errors but no metafields returned
+				create_shopify_log(
+					status="Error",
+					request_data=request_data,
+					response_data=response,
+					message=f"Unexpected response when syncing lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). "
+							f"No errors but no metafields returned.",
+					method="sync_variant_lead_time_metafield",
+				)
+
+	except Exception as e:
+		error_msg = str(e)
+		create_shopify_log(
+			status="Error",
+			request_data=request_data,
+			response_data={"exception": error_msg},
+			message=f"Exception while syncing lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). Error: {error_msg}",
+			method="sync_variant_lead_time_metafield",
 		)
 
 
