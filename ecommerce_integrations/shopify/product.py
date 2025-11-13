@@ -21,6 +21,38 @@ from ecommerce_integrations.shopify.constants import (
 from ecommerce_integrations.shopify.utils import create_shopify_log
 
 
+def get_item_price_for_shopify(item_code: str, setting) -> float:
+	"""
+	Get the selling price for an item to sync to Shopify.
+
+	Priority:
+	1. If shopify_price_list is configured, get price from that Price List
+	2. Otherwise, fall back to the item's shopify_selling_rate field
+	3. If neither is available, return 0
+	"""
+	price = 0
+
+	# Try to get price from configured Price List
+	if setting.get("shopify_price_list"):
+		price_list_rate = frappe.db.get_value(
+			"Item Price",
+			{
+				"item_code": item_code,
+				"price_list": setting.shopify_price_list,
+			},
+			"price_list_rate",
+		)
+		if price_list_rate:
+			price = price_list_rate
+
+	# Fall back to shopify_selling_rate field if no price list price found
+	if not price:
+		item = frappe.get_doc("Item", item_code)
+		price = item.get(ITEM_SELLING_RATE_FIELD) or 0
+
+	return float(price)
+
+
 class ShopifyProduct:
 	def __init__(
 		self,
@@ -387,7 +419,7 @@ def upload_erpnext_item(doc, method=None):
 			update_default_variant_properties(
 				product,
 				sku=template_item.item_code,
-				price=template_item.get(ITEM_SELLING_RATE_FIELD),
+				price=get_item_price_for_shopify(template_item.item_code, setting),
 				is_stock_item=template_item.is_stock_item,
 			)
 			if item.variant_of:
@@ -396,7 +428,7 @@ def upload_erpnext_item(doc, method=None):
 				variant_attributes = {
 					"title": template_item.item_name,
 					"sku": item.item_code,
-					"price": item.get(ITEM_SELLING_RATE_FIELD),
+					"price": get_item_price_for_shopify(item.item_code, setting),
 				}
 				max_index_range = min(3, len(template_item.attributes))
 				for i in range(0, max_index_range):
@@ -452,7 +484,7 @@ def upload_erpnext_item(doc, method=None):
 				update_default_variant_properties(
 					product,
 					is_stock_item=template_item.is_stock_item,
-					price=item.get(ITEM_SELLING_RATE_FIELD),
+					price=get_item_price_for_shopify(item.item_code, setting),
 				)
 			else:
 				# Get the existing variant_id for this ERPNext item
@@ -466,12 +498,12 @@ def upload_erpnext_item(doc, method=None):
 					# Find and update the existing variant
 					for variant in product.variants:
 						if str(variant.id) == str(existing_variant_id):
-							variant.price = item.get(ITEM_SELLING_RATE_FIELD)
+							variant.price = get_item_price_for_shopify(item.item_code, setting)
 							variant.sku = item.item_code
 							break
 				else:
 					# If no variant_id exists, this is a new variant being added to existing product
-					variant_attributes = {"sku": item.item_code, "price": item.get(ITEM_SELLING_RATE_FIELD)}
+					variant_attributes = {"sku": item.item_code, "price": get_item_price_for_shopify(item.item_code, setting)}
 					product.options = []
 					max_index_range = min(3, len(template_item.attributes))
 					for i in range(0, max_index_range):

@@ -43,6 +43,7 @@
   "erpnext_to_shopify_sync_section",
   "upload_erpnext_items",
   "update_shopify_item_on_update",
+  "shopify_price_list",
   "column_break_34",
   "sync_new_item_as_active",
   "upload_variants_as_items",
@@ -337,6 +338,13 @@
   {
    "fieldname": "column_break_34",
    "fieldtype": "Column Break"
+  },
+  {
+   "description": "Price List to use for syncing prices to Shopify. If not specified, will use the 'Shopify Selling Rate' field on each item.",
+   "fieldname": "shopify_price_list",
+   "fieldtype": "Link",
+   "label": "Shopify Price List",
+   "options": "Price List"
   },
   {
    "default": "0",

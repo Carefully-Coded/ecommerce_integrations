@@ -124,7 +124,11 @@ doc_events = {
 		"on_submit": "ecommerce_integrations.unicommerce.grn.upload_grn",
 		"on_cancel": "ecommerce_integrations.unicommerce.grn.prevent_grn_cancel",
 	},
-	"Item Price": {"on_change": "ecommerce_integrations.utils.price_list.discard_item_prices"},
+	"Item Price": {
+		"on_change": "ecommerce_integrations.utils.price_list.discard_item_prices",
+		"after_insert": "ecommerce_integrations.shopify.item_price.update_shopify_price_on_item_price_save",
+		"on_update": "ecommerce_integrations.shopify.item_price.update_shopify_price_on_item_price_save",
+	},
 	"Pick List": {"validate": "ecommerce_integrations.unicommerce.pick_list.validate"},
 	"Sales Invoice": {
 		"on_submit": "ecommerce_integrations.unicommerce.invoice.on_submit",
