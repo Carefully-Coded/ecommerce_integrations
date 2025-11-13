@@ -187,7 +187,27 @@ def setup_custom_fields():
 				label="Shopify Selling Rate",
 				fieldtype="Currency",
 				insert_after="standard_rate",
-			)
+			),
+			dict(
+				fieldname="manufacturer_details_section",
+				label="Manufacturer Details",
+				fieldtype="Section Break",
+				insert_after="supplier_items",
+				collapsible=1,
+			),
+			dict(
+				fieldname="manufacturer_name",
+				label="Manufacturer",
+				fieldtype="Link",
+				options="Manufacturer",
+				insert_after="manufacturer_details_section",
+			),
+			dict(
+				fieldname="manufacturer_part_number",
+				label="Manufacturer Part Number",
+				fieldtype="Data",
+				insert_after="manufacturer_name",
+			),
 		],
 		"Customer": [
 			dict(

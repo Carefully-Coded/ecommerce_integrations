@@ -114,6 +114,7 @@ doc_events = {
 			"ecommerce_integrations.utils.taxation.validate_tax_template",
 			"ecommerce_integrations.unicommerce.product.validate_item",
 		],
+		"before_save": "ecommerce_integrations.utils.item_manufacturer.update_item_manufacturer_on_save",
 	},
 	"Sales Order": {
 		"on_update_after_submit": "ecommerce_integrations.unicommerce.order.update_shipping_info",
