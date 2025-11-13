@@ -44,6 +44,7 @@
   "upload_erpnext_items",
   "update_shopify_item_on_update",
   "shopify_price_list",
+  "sync_prices_now",
   "column_break_34",
   "sync_new_item_as_active",
   "upload_variants_as_items",
@@ -345,6 +346,12 @@
    "fieldtype": "Link",
    "label": "Shopify Price List",
    "options": "Price List"
+  },
+  {
+   "depends_on": "shopify_price_list",
+   "fieldname": "sync_prices_now",
+   "fieldtype": "Button",
+   "label": "Sync Prices Now"
   },
   {
    "default": "0",

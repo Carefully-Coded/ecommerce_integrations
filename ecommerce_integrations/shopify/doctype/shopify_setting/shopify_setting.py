@@ -53,6 +53,21 @@ class ShopifySetting(SettingController):
 		if self.is_enabled() and not self.is_old_data_migrated:
 			migrate_from_old_connector()
 
+		# Check if price list was changed and trigger price sync
+		if self.has_value_changed("shopify_price_list") and self.shopify_price_list:
+			frappe.enqueue(
+				"ecommerce_integrations.shopify.doctype.shopify_setting.shopify_setting.sync_prices_for_all_items",
+				queue="long",
+				timeout=3600,
+				price_list=self.shopify_price_list,
+			)
+			frappe.msgprint(
+				_("Price sync has been queued. All synced items will be updated with prices from {0}").format(
+					self.shopify_price_list
+				),
+				alert=True,
+			)
+
 	def _handle_webhooks(self):
 		if self.is_enabled() and not self.webhooks:
 			new_webhooks = connection.register_webhooks(self.shopify_url, self.get_password("password"))
@@ -118,6 +133,30 @@ class ShopifySetting(SettingController):
 
 		upload_inventory_data_to_shopify(inventory_levels, warehous_map)
 		frappe.msgprint(_("Inventory sync completed. Check Ecommerce Integration Log for details."), alert=True)
+
+	@frappe.whitelist()
+	def sync_prices_now(self):
+		"""Manually trigger price sync to Shopify for all synced items."""
+		if not self.is_enabled():
+			frappe.throw(_("Shopify integration is not enabled"))
+
+		if not self.shopify_price_list:
+			frappe.throw(_("Please select a Shopify Price List first"))
+
+		# Queue the batch job
+		frappe.enqueue(
+			"ecommerce_integrations.shopify.doctype.shopify_setting.shopify_setting.sync_prices_for_all_items",
+			queue="long",
+			timeout=3600,
+			price_list=self.shopify_price_list,
+		)
+
+		frappe.msgprint(
+			_("Price sync has been queued. All synced items will be updated with prices from {0}").format(
+				self.shopify_price_list
+			),
+			alert=True,
+		)
 
 	def get_erpnext_warehouses(self) -> list[ERPNextWarehouse]:
 		return [wh_map.erpnext_warehouse for wh_map in self.shopify_warehouse_mapping]
@@ -278,3 +317,102 @@ def setup_custom_fields():
 	}
 
 	create_custom_fields(custom_fields)
+
+
+def sync_prices_for_all_items(price_list: str):
+	"""
+	Background job to sync prices for all Shopify-synced items from a given price list.
+	Called when the Shopify Price List is changed in settings.
+	"""
+	import time
+	from ecommerce_integrations.shopify.product import upload_erpnext_item
+
+	# Get all items that are synced with Shopify
+	synced_items = frappe.db.sql(
+		"""
+		SELECT DISTINCT ei.erpnext_item_code
+		FROM `tabEcommerce Item` ei
+		INNER JOIN `tabItem` i ON i.name = ei.erpnext_item_code
+		WHERE ei.integration = %s
+		AND i.{sync_field} = 1
+		AND i.disabled = 0
+		""".format(
+			sync_field=ITEM_SYNC_CHECKBOX
+		),
+		(MODULE_NAME,),
+		as_dict=True,
+	)
+
+	if not synced_items:
+		frappe.log_error("No synced items found to update prices", "Shopify Price Sync")
+		return
+
+	total_items = len(synced_items)
+	success_count = 0
+	error_count = 0
+
+	frappe.publish_realtime(
+		"shopify_price_sync_progress",
+		{"total": total_items, "current": 0, "status": "started"},
+		user=frappe.session.user,
+	)
+
+	for idx, item_row in enumerate(synced_items, start=1):
+		try:
+			item = frappe.get_doc("Item", item_row.erpnext_item_code)
+
+			# Call the standard upload function which will use the new price list
+			upload_erpnext_item(item, method="on_update")
+
+			success_count += 1
+
+		except Exception as e:
+			error_count += 1
+			frappe.log_error(
+				f"Failed to sync price for item {item_row.erpnext_item_code}: {str(e)}",
+				"Shopify Price Sync Error",
+			)
+
+		# Publish progress every 10 items
+		if idx % 10 == 0 or idx == total_items:
+			frappe.publish_realtime(
+				"shopify_price_sync_progress",
+				{
+					"total": total_items,
+					"current": idx,
+					"success": success_count,
+					"errors": error_count,
+					"status": "in_progress",
+				},
+				user=frappe.session.user,
+			)
+
+			# Wait 1 second every 10 items to avoid rate limiting
+			if idx < total_items:  # Don't wait after the last item
+				time.sleep(1)
+
+		# Commit every 20 items to avoid long transactions
+		if idx % 20 == 0:
+			frappe.db.commit()
+
+	frappe.db.commit()
+
+	# Send final notification
+	frappe.publish_realtime(
+		"shopify_price_sync_progress",
+		{
+			"total": total_items,
+			"current": total_items,
+			"success": success_count,
+			"errors": error_count,
+			"status": "completed",
+		},
+		user=frappe.session.user,
+	)
+
+	# Log summary
+	summary_msg = f"Shopify Price Sync Completed: {success_count} succeeded, {error_count} failed out of {total_items} items"
+	if error_count > 0:
+		frappe.log_error(summary_msg, "Shopify Price Sync Summary")
+	else:
+		frappe.logger().info(summary_msg)
