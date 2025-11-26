@@ -421,14 +421,21 @@ def upload_erpnext_item(doc, method=None):
 				sku=template_item.item_code,
 				price=get_item_price_for_shopify(template_item.item_code, setting),
 				is_stock_item=template_item.is_stock_item,
+				weight=template_item.weight_per_unit,
+				weight_uom=get_shopify_weight_uom(template_item.weight_uom) if template_item.weight_uom in WEIGHT_TO_ERPNEXT_UOM_MAP.values() else None,
 			)
 			if item.variant_of:
 				product.options = []
 				product.variants = []
+				# Use variant weight if set, otherwise fall back to template weight
+				variant_weight = item.weight_per_unit if item.weight_per_unit else template_item.weight_per_unit
+				variant_weight_uom = item.weight_uom if item.weight_uom else template_item.weight_uom
 				variant_attributes = {
 					"title": template_item.item_name,
 					"sku": item.item_code,
 					"price": get_item_price_for_shopify(item.item_code, setting),
+					"weight": variant_weight or 0,
+					"weight_unit": get_shopify_weight_uom(variant_weight_uom) if variant_weight_uom in WEIGHT_TO_ERPNEXT_UOM_MAP.values() else "kg",
 				}
 				max_index_range = min(3, len(template_item.attributes))
 				for i in range(0, max_index_range):
@@ -485,6 +492,8 @@ def upload_erpnext_item(doc, method=None):
 					product,
 					is_stock_item=template_item.is_stock_item,
 					price=get_item_price_for_shopify(item.item_code, setting),
+					weight=template_item.weight_per_unit,
+					weight_uom=get_shopify_weight_uom(template_item.weight_uom) if template_item.weight_uom in WEIGHT_TO_ERPNEXT_UOM_MAP.values() else None,
 				)
 			else:
 				# Get the existing variant_id for this ERPNext item
@@ -500,10 +509,18 @@ def upload_erpnext_item(doc, method=None):
 						if str(variant.id) == str(existing_variant_id):
 							variant.price = get_item_price_for_shopify(item.item_code, setting)
 							variant.sku = item.item_code
+							variant.weight = item.weight_per_unit or 0
+							if item.weight_uom in WEIGHT_TO_ERPNEXT_UOM_MAP.values():
+								variant.weight_unit = get_shopify_weight_uom(item.weight_uom)
 							break
 				else:
 					# If no variant_id exists, this is a new variant being added to existing product
-					variant_attributes = {"sku": item.item_code, "price": get_item_price_for_shopify(item.item_code, setting)}
+					variant_attributes = {
+						"sku": item.item_code,
+						"price": get_item_price_for_shopify(item.item_code, setting),
+						"weight": item.weight_per_unit or 0,
+						"weight_unit": get_shopify_weight_uom(item.weight_uom) if item.weight_uom in WEIGHT_TO_ERPNEXT_UOM_MAP.values() else "kg",
+					}
 					product.options = []
 					max_index_range = min(3, len(template_item.attributes))
 					for i in range(0, max_index_range):
@@ -593,11 +610,7 @@ def map_erpnext_item_to_shopify(shopify_product: Product, erpnext_item):
 	# shopify_product.body_html = erpnext_item.description
 	shopify_product.product_type = erpnext_item.item_group
 
-	if erpnext_item.weight_uom in WEIGHT_TO_ERPNEXT_UOM_MAP.values():
-		# reverse lookup for key
-		uom = get_shopify_weight_uom(erpnext_weight_uom=erpnext_item.weight_uom)
-		shopify_product.weight = erpnext_item.weight_per_unit
-		shopify_product.weight_unit = uom
+	# Note: Weight is set on variants, not products. See update_default_variant_properties.
 
 	if erpnext_item.disabled:
 		shopify_product.status = "draft"
@@ -853,11 +866,13 @@ def update_default_variant_properties(
 	is_stock_item: bool,
 	sku: str | None = None,
 	price: float | None = None,
+	weight: float | None = None,
+	weight_uom: str | None = None,
 ):
 	"""Shopify creates default variant upon saving the product.
 
 	Some item properties are supposed to be updated on the default variant.
-	Input: saved shopify_product, sku and price
+	Input: saved shopify_product, sku, price, weight, and weight_uom
 	"""
 	default_variant: Variant = shopify_product.variants[0]
 
@@ -869,6 +884,10 @@ def update_default_variant_properties(
 		default_variant.price = price
 	if sku is not None:
 		default_variant.sku = sku
+	if weight is not None:
+		default_variant.weight = weight
+	if weight_uom is not None:
+		default_variant.weight_unit = weight_uom
 
 
 def write_upload_log(status: bool, product: Product, item, action="Created") -> None:
