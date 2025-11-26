@@ -605,28 +605,105 @@ def map_erpnext_item_to_shopify(shopify_product: Product, erpnext_item):
 		msgprint(_("Status of linked Shopify product is changed to Draft."))
 
 
-def sync_lead_time_metafield(shopify_product: Product, erpnext_item):
-	"""Sync lead time from ERPNext item to Shopify product metafield using GraphQL.
+# =============================================================================
+# Metafield Sync Configuration
+# =============================================================================
+# To add a new metafield to sync, add an entry to METAFIELD_DEFINITIONS below.
+# Each definition specifies:
+#   - get_value: Function that takes erpnext_item and returns the value to sync
+#                (can make db requests, access linked docs, etc.)
+#                Return None to skip syncing this metafield
+#   - shopify_key: The metafield key in Shopify (under 'custom' namespace)
+#   - shopify_type: The Shopify metafield type (e.g., 'number_integer', 'single_line_text_field')
+# =============================================================================
 
-	Syncs the 'lead_time_days' field from ERPNext Item to a Shopify metafield
-	under the 'custom' namespace with key 'lead_time_days'.
-
-	Note: This must be called AFTER the product is saved to ensure product.id exists.
-	Uses GraphQL metafieldsSet mutation for efficient upsert operation.
-	"""
+def _get_lead_time_days(erpnext_item):
+	"""Get lead time days from ERPNext item."""
 	lead_time = erpnext_item.get("lead_time_days")
+	if lead_time is not None:
+		return str(int(lead_time))
+	return None
 
-	if lead_time is None:
+
+def _get_manufacturer_part_number(erpnext_item):
+	"""Get manufacturer part number from ERPNext item."""
+	part_no = erpnext_item.get("manufacturer_part_number")
+	
+	if part_no:
+		return str(part_no)
+	return None
+
+def _get_manufacturer_name(erpnext_item):
+	"""Get manufacturer name from ERPNext item."""
+	manufacturer = erpnext_item.get("manufacturer_name")
+	
+	if manufacturer:
+		return str(manufacturer)
+	return None
+
+
+METAFIELD_DEFINITIONS = [
+	{
+		"get_value": _get_lead_time_days,
+		"shopify_key": "lead_time_days",
+		"shopify_type": "number_integer",
+	},
+	{
+		"get_value": _get_manufacturer_part_number,
+		"shopify_key": "manufacturer_part_number",
+		"shopify_type": "single_line_text_field",
+	},
+	{
+		"get_value": _get_manufacturer_name,
+		"shopify_key": "manufacturer_name",
+		"shopify_type": "single_line_text_field",
+	},
+]
+
+
+def _build_metafields_payload(owner_id: str, erpnext_item, definitions=None):
+	"""Build the metafields payload for GraphQL mutation.
+
+	Args:
+		owner_id: Shopify Global ID (e.g., gid://shopify/Product/123)
+		erpnext_item: ERPNext Item document
+		definitions: List of metafield definitions to use (defaults to METAFIELD_DEFINITIONS)
+
+	Returns:
+		List of metafield dicts for the GraphQL mutation, or empty list if no values to sync
+	"""
+	if definitions is None:
+		definitions = METAFIELD_DEFINITIONS
+
+	metafields = []
+	for definition in definitions:
+		value = definition["get_value"](erpnext_item)
+		if value is not None:
+			metafields.append({
+				"ownerId": owner_id,
+				"namespace": "custom",
+				"key": definition["shopify_key"],
+				"value": value,
+				"type": definition["shopify_type"],
+			})
+
+	return metafields
+
+
+def _execute_metafields_sync(owner_id: str, owner_type: str, erpnext_item, metafields: list):
+	"""Execute the GraphQL mutation to sync metafields.
+
+	Args:
+		owner_id: Shopify ID (numeric, not global ID)
+		owner_type: 'Product' or 'ProductVariant'
+		erpnext_item: ERPNext Item document
+		metafields: List of metafield dicts for the mutation
+	"""
+	if not metafields:
 		return
 
-	# Product must be saved first to have an ID
-	if not shopify_product.id:
-		return
-
-	# Prepare GraphQL mutation for metafield upsert
-	# Using metafieldsSet mutation which handles both create and update
 	mutation = """
-	mutation SetProductMetafield($metafields: [MetafieldsSetInput!]!) {
+	mutation SetMetafields($metafields: [MetafieldsSetInput!]!) {
 		metafieldsSet(metafields: $metafields) {
 			metafields {
 				id
@@ -643,42 +720,25 @@ def sync_lead_time_metafield(shopify_product: Product, erpnext_item):
 	}
 	"""
 
-	# Prepare variables
-	# Global ID format: gid://shopify/Product/{product_id}
-	owner_id = f"gid://shopify/Product/{shopify_product.id}"
+	variables = {"metafields": metafields}
 
-	variables = {
-		"metafields": [
-			{
-				"ownerId": owner_id,
-				"namespace": "custom",
-				"key": "lead_time_days",
-				"value": str(int(lead_time)),
-				"type": "number_integer"
-			}
-		]
-	}
-
-	# Request data for logging
+	synced_fields = [m["key"] for m in metafields]
 	request_data = {
 		"mutation": mutation,
 		"variables": variables,
 		"item_code": erpnext_item.item_code,
 		"item_name": erpnext_item.item_name,
-		"lead_time_days": lead_time,
-		"shopify_product_id": shopify_product.id,
+		"synced_fields": synced_fields,
+		f"shopify_{owner_type.lower()}_id": owner_id,
 	}
 
 	try:
-		# Execute GraphQL mutation
 		result = shopify.GraphQL().execute(mutation, variables=variables)
 
-		# Parse response
 		import json
 		response = json.loads(result)
 
 		if "errors" in response:
-			# GraphQL-level errors
 			error_messages = [error.get("message", str(error)) for error in response["errors"]]
 			error_msg = f"GraphQL errors: {', '.join(error_messages)}"
 
@@ -686,12 +746,11 @@ def sync_lead_time_metafield(shopify_product: Product, erpnext_item):
 				status="Error",
 				request_data=request_data,
 				response_data=response,
-				message=f"Failed to sync lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). {error_msg}",
-				method="sync_lead_time_metafield",
+				message=f"Failed to sync metafields for {owner_type} {owner_id} (Item: {erpnext_item.item_code}). {error_msg}",
+				method="sync_metafields",
 			)
 
 		elif response.get("data", {}).get("metafieldsSet", {}).get("userErrors"):
-			# User errors from the mutation
 			user_errors = response["data"]["metafieldsSet"]["userErrors"]
 			error_messages = [f"{err.get('field', 'unknown')}: {err.get('message', str(err))}" for err in user_errors]
 			error_msg = f"User errors: {', '.join(error_messages)}"
@@ -700,32 +759,30 @@ def sync_lead_time_metafield(shopify_product: Product, erpnext_item):
 				status="Error",
 				request_data=request_data,
 				response_data=response,
-				message=f"Failed to sync lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). {error_msg}",
-				method="sync_lead_time_metafield",
+				message=f"Failed to sync metafields for {owner_type} {owner_id} (Item: {erpnext_item.item_code}). {error_msg}",
+				method="sync_metafields",
 			)
 
 		else:
-			# Success
-			metafields = response.get("data", {}).get("metafieldsSet", {}).get("metafields", [])
-			if metafields:
-				metafield_data = metafields[0]
+			returned_metafields = response.get("data", {}).get("metafieldsSet", {}).get("metafields", [])
+			if returned_metafields:
+				synced_keys = [m.get("key") for m in returned_metafields]
 				create_shopify_log(
 					status="Success",
 					request_data=request_data,
 					response_data=response,
-					message=f"Successfully synced lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). "
-							f"Metafield: {metafield_data.get('namespace')}.{metafield_data.get('key')} = {metafield_data.get('value')} days",
-					method="sync_lead_time_metafield",
+					message=f"Successfully synced metafields for {owner_type} {owner_id} (Item: {erpnext_item.item_code}). "
+							f"Synced: {', '.join(synced_keys)}",
+					method="sync_metafields",
 				)
 			else:
-				# Unexpected: no errors but no metafields returned
 				create_shopify_log(
 					status="Error",
 					request_data=request_data,
 					response_data=response,
-					message=f"Unexpected response when syncing lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). "
+					message=f"Unexpected response when syncing metafields for {owner_type} {owner_id} (Item: {erpnext_item.item_code}). "
 							f"No errors but no metafields returned.",
-					method="sync_lead_time_metafield",
+					method="sync_metafields",
 				)
 
 	except Exception as e:
@@ -734,142 +791,55 @@ def sync_lead_time_metafield(shopify_product: Product, erpnext_item):
 			status="Error",
 			request_data=request_data,
 			response_data={"exception": error_msg},
-			message=f"Exception while syncing lead time metafield for product {shopify_product.id} (Item: {erpnext_item.item_code}). Error: {error_msg}",
-			method="sync_lead_time_metafield",
+			message=f"Exception while syncing metafields for {owner_type} {owner_id} (Item: {erpnext_item.item_code}). Error: {error_msg}",
+			method="sync_metafields",
 		)
 
 
-def sync_variant_lead_time_metafield(variant_id: str, erpnext_item):
-	"""Sync lead time from ERPNext item to Shopify variant metafield using GraphQL.
+def sync_product_metafields(shopify_product: Product, erpnext_item):
+	"""Sync all configured metafields from ERPNext item to Shopify product.
+	Note: This must be called AFTER the product is saved to ensure product.id exists.
 
-	Syncs the 'lead_time_days' field from ERPNext Item to a Shopify variant metafield
-	under the 'custom' namespace with key 'lead_time_days'.
+	Args:
+		shopify_product: Shopify Product resource
+		erpnext_item: ERPNext Item document
+	"""
+	if not shopify_product.id:
+		return
+
+	owner_id = f"gid://shopify/Product/{shopify_product.id}"
+	metafields = _build_metafields_payload(owner_id, erpnext_item)
+
+	if metafields:
+		_execute_metafields_sync(shopify_product.id, "Product", erpnext_item, metafields)
+
+
+def sync_variant_metafields(variant_id: str, erpnext_item):
+	"""Sync all configured metafields from ERPNext item to Shopify variant.
 
 	Args:
 		variant_id: Shopify variant ID (numeric)
 		erpnext_item: ERPNext Item document
 	"""
-	lead_time = erpnext_item.get("lead_time_days")
-
-	if lead_time is None:
-		return
-
 	if not variant_id:
 		return
 
-	# Prepare GraphQL mutation for variant metafield upsert
-	mutation = """
-	mutation SetVariantMetafield($metafields: [MetafieldsSetInput!]!) {
-		metafieldsSet(metafields: $metafields) {
-			metafields {
-				id
-				namespace
-				key
-				value
-				type
-			}
-			userErrors {
-				field
-				message
-			}
-		}
-	}
-	"""
-
-	# Prepare variables
-	# Global ID format: gid://shopify/ProductVariant/{variant_id}
 	owner_id = f"gid://shopify/ProductVariant/{variant_id}"
+	metafields = _build_metafields_payload(owner_id, erpnext_item)
 
-	variables = {
-		"metafields": [
-			{
-				"ownerId": owner_id,
-				"namespace": "custom",
-				"key": "lead_time_days",
-				"value": str(int(lead_time)),
-				"type": "number_integer"
-			}
-		]
-	}
+	if metafields:
+		_execute_metafields_sync(variant_id, "ProductVariant", erpnext_item, metafields)
 
-	# Request data for logging
-	request_data = {
-		"mutation": mutation,
-		"variables": variables,
-		"item_code": erpnext_item.item_code,
-		"item_name": erpnext_item.item_name,
-		"lead_time_days": lead_time,
-		"shopify_variant_id": variant_id,
-	}
 
-	try:
-		# Execute GraphQL mutation
-		result = shopify.GraphQL().execute(mutation, variables=variables)
+# Backwards compatibility aliases
+def sync_lead_time_metafield(shopify_product: Product, erpnext_item):
+	"""Deprecated: Use sync_product_metafields instead."""
+	sync_product_metafields(shopify_product, erpnext_item)
 
-		# Parse response
-		import json
-		response = json.loads(result)
 
-		if "errors" in response:
-			# GraphQL-level errors
-			error_messages = [error.get("message", str(error)) for error in response["errors"]]
-			error_msg = f"GraphQL errors: {', '.join(error_messages)}"
-
-			create_shopify_log(
-				status="Error",
-				request_data=request_data,
-				response_data=response,
-				message=f"Failed to sync lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). {error_msg}",
-				method="sync_variant_lead_time_metafield",
-			)
-
-		elif response.get("data", {}).get("metafieldsSet", {}).get("userErrors"):
-			# User errors from the mutation
-			user_errors = response["data"]["metafieldsSet"]["userErrors"]
-			error_messages = [f"{err.get('field', 'unknown')}: {err.get('message', str(err))}" for err in user_errors]
-			error_msg = f"User errors: {', '.join(error_messages)}"
-
-			create_shopify_log(
-				status="Error",
-				request_data=request_data,
-				response_data=response,
-				message=f"Failed to sync lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). {error_msg}",
-				method="sync_variant_lead_time_metafield",
-			)
-
-		else:
-			# Success
-			metafields = response.get("data", {}).get("metafieldsSet", {}).get("metafields", [])
-			if metafields:
-				metafield_data = metafields[0]
-				create_shopify_log(
-					status="Success",
-					request_data=request_data,
-					response_data=response,
-					message=f"Successfully synced lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). "
-							f"Metafield: {metafield_data.get('namespace')}.{metafield_data.get('key')} = {metafield_data.get('value')} days",
-					method="sync_variant_lead_time_metafield",
-				)
-			else:
-				# Unexpected: no errors but no metafields returned
-				create_shopify_log(
-					status="Error",
-					request_data=request_data,
-					response_data=response,
-					message=f"Unexpected response when syncing lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). "
-							f"No errors but no metafields returned.",
-					method="sync_variant_lead_time_metafield",
-				)
-
-	except Exception as e:
-		error_msg = str(e)
-		create_shopify_log(
-			status="Error",
-			request_data=request_data,
-			response_data={"exception": error_msg},
-			message=f"Exception while syncing lead time metafield for variant {variant_id} (Item: {erpnext_item.item_code}). Error: {error_msg}",
-			method="sync_variant_lead_time_metafield",
-		)
+def sync_variant_lead_time_metafield(variant_id: str, erpnext_item):
+	"""Deprecated: Use sync_variant_metafields instead."""
+	sync_variant_metafields(variant_id, erpnext_item)
 
 
 def get_shopify_weight_uom(erpnext_weight_uom: str) -> str:
