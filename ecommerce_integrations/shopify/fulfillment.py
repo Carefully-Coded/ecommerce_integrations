@@ -313,7 +313,7 @@ def _create_shopify_fulfillment(delivery_note, shopify_order_id, setting):
 				"fulfillmentOrderLineItems": line_items
 			}
 		],
-		"notifyCustomer": False
+		"notifyCustomer": True
 	}
 
 	# Add tracking information if available
