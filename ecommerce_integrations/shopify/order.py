@@ -62,12 +62,12 @@ def sync_sales_order(payload, request_id=None):
 def create_order(order, setting, company=None):
 	# local import to avoid circular dependencies
 	from ecommerce_integrations.shopify.fulfillment import create_delivery_note
-	from ecommerce_integrations.shopify.invoice import create_sales_invoice
+	from ecommerce_integrations.shopify.invoice import make_payment_entry_against_sales_order
 
 	so = create_sales_order(order, setting, company)
 	if so:
 		if order.get("financial_status") == "paid":
-			create_sales_invoice(order, setting, so)
+			make_payment_entry_against_sales_order(order, setting, so)
 
 		if order.get("fulfillments"):
 			create_delivery_note(order, setting, so)
@@ -359,11 +359,11 @@ def get_sales_order(order_id):
 def cancel_order(payload, request_id=None):
 	"""Called by order/cancelled event.
 
-	When shopify order is cancelled there could be many different someone handles it.
+	When shopify order is cancelled there could be many different ways to handle it.
 
 	Updates document with custom field showing order status.
 
-	IF sales invoice / delivery notes are not generated against an order, then cancel it.
+	If no delivery notes exist against an order, cancel any payment entries and the sales order.
 	"""
 	frappe.set_user("Administrator")
 	frappe.flags.request_id = request_id
@@ -380,16 +380,23 @@ def cancel_order(payload, request_id=None):
 			create_shopify_log(status="Invalid", message="Sales Order does not exist")
 			return
 
-		sales_invoice = frappe.db.get_value("Sales Invoice", filters={ORDER_ID_FIELD: order_id})
 		delivery_notes = frappe.db.get_list("Delivery Note", filters={ORDER_ID_FIELD: order_id})
-
-		if sales_invoice:
-			frappe.db.set_value("Sales Invoice", sales_invoice, ORDER_STATUS_FIELD, order_status)
 
 		for dn in delivery_notes:
 			frappe.db.set_value("Delivery Note", dn.name, ORDER_STATUS_FIELD, order_status)
 
-		if not sales_invoice and not delivery_notes and sales_order.docstatus == 1:
+		if not delivery_notes and sales_order.docstatus == 1:
+			# Cancel any payment entries linked to this sales order first
+			payment_entries = frappe.db.get_all(
+				"Payment Entry Reference",
+				filters={"reference_doctype": "Sales Order", "reference_name": sales_order.name},
+				fields=["parent"],
+			)
+			for pe_ref in payment_entries:
+				pe = frappe.get_doc("Payment Entry", pe_ref.parent)
+				if pe.docstatus == 1:
+					pe.cancel()
+
 			sales_order.cancel()
 		else:
 			frappe.db.set_value("Sales Order", sales_order.name, ORDER_STATUS_FIELD, order_status)
