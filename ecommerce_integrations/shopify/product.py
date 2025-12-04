@@ -458,13 +458,15 @@ def upload_erpnext_item(doc, method=None):
 
 			product.save()  # push variant
 
-			# Sync lead time metafield after product is saved
+			# Sync metafields after product is saved
 			sync_lead_time_metafield(product, template_item)
 
-			# If this is a variant item, also sync metafield to the variant
-			if item.variant_of and product.variants:
+			# Sync metafields to the variant (for both variant items and single products)
+			if product.variants:
 				variant_id = str(product.variants[0].id)
-				sync_variant_lead_time_metafield(variant_id, item)
+				# Use the variant item if it's a variant, otherwise use the template item
+				variant_item = item if item.variant_of else template_item
+				sync_variant_lead_time_metafield(variant_id, variant_item)
 
 			ecom_items = list(set([item, template_item]))
 			for d in ecom_items:
@@ -543,10 +545,10 @@ def upload_erpnext_item(doc, method=None):
 
 			is_successful = product.save()
 			if is_successful:
-				# Sync lead time metafield after product update
+				# Sync metafields after product update
 				sync_lead_time_metafield(product, template_item)
 
-				# If this is a variant item, also sync metafield to the variant
+				# Sync metafields to the variant (for both variant items and single products)
 				if item.variant_of:
 					# Get the variant ID for this item
 					variant_id = existing_variant_id if existing_variant_id else None
@@ -563,6 +565,11 @@ def upload_erpnext_item(doc, method=None):
 
 					if variant_id:
 						sync_variant_lead_time_metafield(variant_id, item)
+				else:
+					# For non-variant (single) products, sync metafields to the default variant
+					if product.variants:
+						variant_id = str(product.variants[0].id)
+						sync_variant_lead_time_metafield(variant_id, template_item)
 
 			write_upload_log(status=is_successful, product=product, item=item, action="Updated")
 
@@ -641,15 +648,14 @@ def _get_lead_time_days(erpnext_item):
 def _get_manufacturer_part_number(erpnext_item):
 	"""Get manufacturer part number from ERPNext item."""
 	part_no = erpnext_item.get("manufacturer_part_number")
-	
 	if part_no:
 		return str(part_no)
 	return None
 
+
 def _get_manufacturer_name(erpnext_item):
 	"""Get manufacturer name from ERPNext item."""
 	manufacturer = erpnext_item.get("manufacturer_name")
-	
 	if manufacturer:
 		return str(manufacturer)
 	return None
