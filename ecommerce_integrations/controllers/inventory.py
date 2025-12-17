@@ -6,13 +6,18 @@ from frappe.utils import now
 from frappe.utils.nestedset import get_descendants_of
 
 
-def get_inventory_levels(warehouses: tuple[str], integration: str) -> list[_dict]:
+def get_inventory_levels(warehouses: tuple[str], integration: str, force_sync: bool = False) -> list[_dict]:
 	"""
 	Get list of dict containing items for which the inventory needs to be updated on Integeration.
 
 	New inventory levels are identified by checking Bin modification timestamp,
 	so ensure that if you sync the inventory with integration, you have also
 	updated `inventory_synced_on` field in related Ecommerce Item.
+
+	Args:
+		warehouses: Tuple of warehouse names to get inventory for
+		integration: Integration name (e.g. "Shopify")
+		force_sync: If True, returns all items regardless of sync status
 
 	returns: list of _dict containing ecom_item, item_code, integration_item_code, variant_id, actual_qty, warehouse, reserved_qty
 	"""
@@ -34,10 +39,13 @@ def get_inventory_levels(warehouses: tuple[str], integration: str) -> list[_dict
 		)
 		.where(
 			(Bin.warehouse.isin(warehouses))
-			& (Bin.modified > EcommerceItem.inventory_synced_on)
 			& (EcommerceItem.integration == integration)
 		)
 	)
+
+	# Only filter by sync timestamp if not forcing sync
+	if not force_sync:
+		query = query.where(Bin.modified > EcommerceItem.inventory_synced_on)
 
 	return query.run(as_dict=1)
 

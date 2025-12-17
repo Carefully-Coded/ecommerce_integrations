@@ -111,7 +111,7 @@ class ShopifySetting(SettingController):
 
 	@frappe.whitelist()
 	def sync_inventory_now(self):
-		"""Manually trigger inventory sync to Shopify, bypassing frequency check."""
+		"""Manually trigger inventory sync to Shopify for all synced items."""
 		from ecommerce_integrations.shopify.inventory import upload_inventory_data_to_shopify
 		from ecommerce_integrations.controllers.inventory import get_inventory_levels
 
@@ -125,14 +125,15 @@ class ShopifySetting(SettingController):
 		if not warehous_map:
 			frappe.throw(_("Please configure warehouse mapping first"))
 
-		inventory_levels = get_inventory_levels(tuple(warehous_map.keys()), MODULE_NAME)
+		# Force sync all items regardless of whether they appear to need updating
+		inventory_levels = get_inventory_levels(tuple(warehous_map.keys()), MODULE_NAME, force_sync=True)
 
 		if not inventory_levels:
-			frappe.msgprint(_("No inventory changes to sync"))
+			frappe.msgprint(_("No items found to sync"))
 			return
 
 		upload_inventory_data_to_shopify(inventory_levels, warehous_map)
-		frappe.msgprint(_("Inventory sync completed. Check Ecommerce Integration Log for details."), alert=True)
+		frappe.msgprint(_("Inventory sync completed for {0} items. Check Ecommerce Integration Log for details.").format(len(inventory_levels)), alert=True)
 
 	@frappe.whitelist()
 	def sync_prices_now(self):
