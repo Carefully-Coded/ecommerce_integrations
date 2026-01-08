@@ -1,9 +1,11 @@
+import time
 from collections import Counter
 
 import frappe
 from frappe.utils import cint, create_batch, now
 from pyactiveresource.connection import ResourceNotFound
 from shopify.resources import InventoryLevel, Variant
+import pyactiveresource.connection
 
 from ecommerce_integrations.controllers.inventory import (
 	get_inventory_levels,
@@ -47,12 +49,25 @@ def upload_inventory_data_to_shopify(inventory_levels, warehous_map) -> None:
 				variant = Variant.find(d.variant_id)
 				inventory_id = variant.inventory_item_id
 
-				InventoryLevel.set(
-					location_id=d.shopify_location_id,
-					inventory_item_id=inventory_id,
-					# shopify doesn't support fractional quantity
-					available=cint(d.actual_qty) - cint(d.reserved_qty),
-				)
+				# Retry loop for rate limiting
+				max_retries = 5
+				for attempt in range(max_retries):
+					try:
+						InventoryLevel.set(
+							location_id=d.shopify_location_id,
+							inventory_item_id=inventory_id,
+							# shopify doesn't support fractional quantity
+							available=cint(d.actual_qty) - cint(d.reserved_qty),
+						)
+						break  # Success, exit retry loop
+					except pyactiveresource.connection.ClientError as e:
+						if e.response.code == 429 and attempt < max_retries - 1:
+							retry_after = float(e.response.headers.get('retry-after', 4))
+							time.sleep(retry_after)
+
+							continue  # Retry
+						raise  # Re-raise if not 429 or max retries exceeded
+
 				update_inventory_sync_status(d.ecom_item, time=synced_on)
 				d.status = "Success"
 			except ResourceNotFound:
@@ -78,8 +93,9 @@ def _log_inventory_update_status(inventory_levels) -> None:
 	)
 
 	stats = Counter([d.status for d in inventory_levels])
+	total_items = len(inventory_levels)
 
-	percent_successful = stats["Success"] / len(inventory_levels)
+	percent_successful = stats["Success"] / total_items if total_items > 0 else 1.0
 
 	if percent_successful == 0:
 		status = "Failed"
@@ -88,6 +104,7 @@ def _log_inventory_update_status(inventory_levels) -> None:
 	else:
 		status = "Success"
 
-	log_message = f"Updated {percent_successful * 100}% items\n\n" + log_message
+	summary = f"Processed: {total_items}, Success rate: {percent_successful * 100:.0f}%\n\n"
+	log_message = summary + log_message
 
 	create_shopify_log(method="update_inventory_on_shopify", status=status, message=log_message)

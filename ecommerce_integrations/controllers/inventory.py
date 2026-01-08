@@ -36,6 +36,7 @@ def get_inventory_levels(warehouses: tuple[str], integration: str, force_sync: b
 			Bin.actual_qty,
 			Bin.warehouse,
 			Bin.reserved_qty,
+			EcommerceItem.inventory_synced_on,
 		)
 		.where(
 			(Bin.warehouse.isin(warehouses))
