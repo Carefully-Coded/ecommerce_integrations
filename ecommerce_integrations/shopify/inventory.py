@@ -46,13 +46,13 @@ def upload_inventory_data_to_shopify(inventory_levels, warehous_map) -> None:
 			d.shopify_location_id = warehous_map[d.warehouse]
 
 			try:
-				variant = Variant.find(d.variant_id)
-				inventory_id = variant.inventory_item_id
-
-				# Retry loop for rate limiting
+				# Retry loop for rate limiting - covers both Variant.find and InventoryLevel.set
 				max_retries = 5
 				for attempt in range(max_retries):
 					try:
+						variant = Variant.find(d.variant_id)
+						inventory_id = variant.inventory_item_id
+
 						InventoryLevel.set(
 							location_id=d.shopify_location_id,
 							inventory_item_id=inventory_id,
@@ -64,7 +64,6 @@ def upload_inventory_data_to_shopify(inventory_levels, warehous_map) -> None:
 						if e.response.code == 429 and attempt < max_retries - 1:
 							retry_after = float(e.response.headers.get('retry-after', 4))
 							time.sleep(retry_after)
-
 							continue  # Retry
 						raise  # Re-raise if not 429 or max retries exceeded
 
