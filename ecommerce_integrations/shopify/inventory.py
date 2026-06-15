@@ -57,7 +57,7 @@ def upload_inventory_data_to_shopify(inventory_levels, warehous_map) -> None:
 							location_id=d.shopify_location_id,
 							inventory_item_id=inventory_id,
 							# shopify doesn't support fractional quantity
-							available=cint(d.actual_qty) - cint(d.reserved_qty),
+							available=cint(d.actual_qty) - cint(d.reserved_qty) - cint(d.reserved_qty_for_production),
 						)
 						break  # Success, exit retry loop
 					except pyactiveresource.connection.ClientError as e:

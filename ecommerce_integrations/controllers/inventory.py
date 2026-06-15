@@ -19,7 +19,7 @@ def get_inventory_levels(warehouses: tuple[str], integration: str, force_sync: b
 		integration: Integration name (e.g. "Shopify")
 		force_sync: If True, returns all items regardless of sync status
 
-	returns: list of _dict containing ecom_item, item_code, integration_item_code, variant_id, actual_qty, warehouse, reserved_qty
+	returns: list of _dict containing ecom_item, item_code, integration_item_code, variant_id, actual_qty, warehouse, reserved_qty, reserved_qty_for_production
 	"""
 	EcommerceItem = DocType("Ecommerce Item")
 	Bin = DocType("Bin")
@@ -36,6 +36,7 @@ def get_inventory_levels(warehouses: tuple[str], integration: str, force_sync: b
 			Bin.actual_qty,
 			Bin.warehouse,
 			Bin.reserved_qty,
+			Bin.reserved_qty_for_production,
 			EcommerceItem.inventory_synced_on,
 		)
 		.where(
@@ -74,6 +75,7 @@ def get_inventory_levels_of_group_warehouse(warehouse: str, integration: str):
 			EcommerceItem.variant_id,
 			Sum(Bin.actual_qty).as_("actual_qty"),
 			Sum(Bin.reserved_qty).as_("reserved_qty"),
+			Sum(Bin.reserved_qty_for_production).as_("reserved_qty_for_production"),
 			Max(Bin.modified).as_("last_updated"),
 			Max(EcommerceItem.inventory_synced_on).as_("last_synced"),
 		)
