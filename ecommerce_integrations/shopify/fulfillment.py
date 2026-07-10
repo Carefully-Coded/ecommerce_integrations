@@ -94,8 +94,8 @@ def push_fulfillment_to_shopify(delivery_note, method=None):
 	This function is called via document hook when a Delivery Note is submitted.
 	It creates a fulfillment in Shopify for orders that originated from Shopify.
 	"""
-	frappe.set_user("Administrator")
-	setting = frappe.get_doc(SETTING_DOCTYPE)
+	
+	setting = frappe.get_cached_doc(SETTING_DOCTYPE)
 
 	# Check if sync is enabled
 	if not cint(setting.sync_delivery_note) or not setting.is_enabled():
@@ -359,9 +359,15 @@ def _create_shopify_fulfillment(delivery_note, shopify_order_id, setting):
 				str(fulfillment_id),
 				update_modified=False
 			)
-			frappe.db.commit()
+			# This runs inside the Delivery Note on_submit transaction, where
+			# Frappe disables transaction control and commit would break
+			# atomicity. Only commit when invoked outside a managed transaction
+			# (e.g. a background retry); otherwise the submit commits this write.
+			if not frappe.db._disable_transaction_control:
+				frappe.db.commit()
 		else:
 			frappe.throw("Fulfillment created but no ID returned")
 
 	except Exception as e:
 		frappe.throw(f"Failed to create fulfillment: {str(e)}")
+

@@ -50,7 +50,13 @@ def create_log(
 ):
 	make_new = make_new or not bool(frappe.flags.request_id)
 
-	if rollback:
+	# When called from within a document event (e.g. Delivery Note on_submit),
+	# Frappe disables transaction control: commit/rollback become no-op warnings
+	# and would break atomicity. Skip them in that case; the surrounding request
+	# will commit the log row as part of its own transaction.
+	can_commit = not frappe.db._disable_transaction_control
+
+	if rollback and can_commit:
 		frappe.db.rollback()
 
 	if make_new:
@@ -73,7 +79,8 @@ def create_log(
 	log.status = status
 	log.save(ignore_permissions=True)
 
-	frappe.db.commit()
+	if can_commit:
+		frappe.db.commit()
 
 	return log
 
